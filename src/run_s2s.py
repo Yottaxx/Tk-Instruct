@@ -24,19 +24,18 @@ import sys
 import json
 from dataclasses import dataclass, field
 from typing import Optional
-
+from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 import datasets
 import nltk  # Here to have a nice missing dependency error message early on
 import numpy as np
-from datasets.utils import set_progress_bar_enabled
 from datasets import load_dataset, load_metric
 
 import transformers
 from filelock import FileLock
 from transformers import (
     AutoConfig,
-    AutoModelForSeq2SeqLM,
     AutoTokenizer,
+    T5ForConditionalGeneration,
     DataCollatorForSeq2Seq,
     HfArgumentParser,
     MBart50Tokenizer,
@@ -44,6 +43,7 @@ from transformers import (
     MBartTokenizer,
     MBartTokenizerFast,
     Seq2SeqTrainer,
+    AutoModelForSeq2SeqLM,
     Seq2SeqTrainingArguments,
     set_seed,
 )
@@ -53,7 +53,6 @@ from ni_collator import DataCollatorForNI
 from ni_trainer import NITrainer, DenserEvalCallback
 from compute_metrics import compute_metrics, compute_grouped_metrics
 
-set_progress_bar_enabled(False)
 logger = logging.getLogger(__name__)
 
 try:
@@ -337,14 +336,20 @@ def main():
     )
     model = AutoModelForSeq2SeqLM.from_pretrained(
         model_args.model_name_or_path,
-        from_tf=bool(".ckpt" in model_args.model_name_or_path),
         config=config,
-        cache_dir=model_args.cache_dir,
-        revision=model_args.model_revision,
-        use_auth_token=True if model_args.use_auth_token else None,
     )
-
     model.resize_token_embeddings(len(tokenizer))
+    
+    peft_config = LoraConfig(
+    task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1
+)
+
+    model = get_peft_model(model, peft_config)
+    
+    model.print_trainable_parameters()
+
+
+
 
     if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
         if isinstance(tokenizer, MBartTokenizer):

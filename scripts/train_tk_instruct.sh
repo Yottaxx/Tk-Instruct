@@ -1,12 +1,13 @@
 #!/bin/bash
 set -x
 
-export CUDA_DEVICE_ORDER="PCI_BUS_ID"
-export TRANSFORMERS_CACHE=/home/yizhongw/.cache/huggingface
+# export CUDA_DEVICE_ORDER="PCI_BUS_ID"
+# export TRANSFORMERS_CACHE=/home/yizhongw/.cache/huggingface
+    # --model_name_or_path google/t5-xl-lm-adapt \
 
 port=$(shuf -i25000-30000 -n1)
 
-deepspeed --master_port $port src/run_s2s.py \
+deepspeed --master_port $port --include localhost:0,5,6,7 src/run_s2s.py \
     --do_train \
     --do_predict \
     --predict_with_generate \
@@ -24,10 +25,8 @@ deepspeed --master_port $port src/run_s2s.py \
     --tk_instruct False \
     --data_dir data/splits/default \
     --task_dir data/tasks \
-    --output_dir output/ \
+    --output_dir t5-xl-lm-adapt-lora-experiment/ \
     --overwrite_output_dir \
-    --cache_dir ./cache/ \
-    --overwrite_cache \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 2 \
     --gradient_accumulation_steps 2 \
@@ -37,9 +36,10 @@ deepspeed --master_port $port src/run_s2s.py \
     --warmup_steps 0 \
     --logging_strategy steps \
     --logging_steps 500 \
-    --evaluation_strategy no \
+    --evaluation_strategy steps \
+    --eval_steps 2500 \
     --save_strategy steps \
     --save_steps 2500 \
     --deepspeed ds_configs/stage2.config \
     --bf16 \
-    --run_name t5-experiment
+    --run_name t5-xl-lm-adapt-lora-experiment
