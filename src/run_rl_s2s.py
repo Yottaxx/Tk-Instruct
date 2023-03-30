@@ -52,6 +52,9 @@ from transformers.trainer_utils import get_last_checkpoint
 from ni_collator import DataCollatorForNI
 from ni_trainer import NITrainer, DenserEvalCallback
 from compute_metrics import compute_metrics, compute_grouped_metrics
+from model.ActorCritic import ActorCritic
+from ni_rl_collator import DataCollatorForRLNI, DataCollatorForRLExNI
+from ni_rl_trainer import NIRLTrainer
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +91,19 @@ class ModelArguments:
         default=None,
         metadata={"help": "Where to store the pretrained models downloaded from huggingface.co"},
     )
+    actor_eps_clip: Optional[float] = field(
+        default=0.2, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+    )
+    beta_s: Optional[float] = field(
+        default=0.1, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+    )
+    critic_eps_clip: Optional[float] = field(
+        default=0.2, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+    )
+    logits_shape: Optional[int] = field(
+        default=256, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+    )
+
     use_fast_tokenizer: bool = field(
         default=True,
         metadata={"help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."},
@@ -242,6 +258,16 @@ class NITrainingArguments(Seq2SeqTrainingArguments):
     )
     do_demo: bool = field(default=False, metadata={"help": "Whether to run the model as a demo in the terminal."})
 
+    episode: Optional[int] = field(
+        default=64,
+        metadata={"help": "If specifid, the model will do more evaluation at the beginning of training."}
+    )
+    
+    max_rl_sample: Optional[int] = field(
+        default=1600,
+        metadata={"help": "If specifid, the model will do more evaluation at the beginning of training."}
+    )
+
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -334,22 +360,16 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        model_args.model_name_or_path,
-        config=config,
-    )
-    model.resize_token_embeddings(len(tokenizer))
-    
+
     peft_config = LoraConfig(
     task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1
 )
+    model = ActorCritic(model_args=model_args, config=config, peft_config=peft_config)
+    model.actor.resize_token_embeddings(len(tokenizer))
+    model.critic.resize_token_embeddings(len(tokenizer))
 
-    model = get_peft_model(model, peft_config)
-    
-    model.print_trainable_parameters()
-
-    model.generate()
-
+    model.critic.print_trainable_parameters()
+    model.actor.print_trainable_parameters()
 
     if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
         if isinstance(tokenizer, MBartTokenizer):
@@ -424,7 +444,7 @@ def main():
 
     # Data collator
     label_pad_token_id = -100 if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id
-    data_collator = DataCollatorForNI(
+    data_collator = DataCollatorForRLNI(
         tokenizer,
         model=model,
         padding="max_length" if data_args.pad_to_max_length else "longest",
@@ -438,6 +458,16 @@ def main():
         num_neg_examples=data_args.num_neg_examples,
         add_explanation=data_args.add_explanation,
         tk_instruct=data_args.tk_instruct
+    )
+
+    ex_data_collator = DataCollatorForRLExNI(
+        tokenizer,
+        model=model,
+        padding="max_length" if data_args.pad_to_max_length else True,
+        max_source_length=data_args.max_source_length,
+        max_target_length=data_args.max_target_length,
+        label_pad_token_id=label_pad_token_id,
+        pad_to_multiple_of=8 if training_args.fp16 else None,
     )
     # we don't want to remove unused columns because we will prepare each batch during training, 
     # and some of the information will aslo be used in evaluation.
@@ -469,7 +499,7 @@ def main():
         return result
 
     # Initialize our Trainer
-    trainer = NITrainer(
+    trainer = NIRLTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
@@ -477,7 +507,9 @@ def main():
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_ni_metrics if training_args.predict_with_generate else None,
-        callbacks=[DenserEvalCallback] if training_args.denser_evaluation else None
+        callbacks=[DenserEvalCallback] if training_args.denser_evaluation else None,
+        ex_train_dataset = None,
+        ex_data_collator =ex_data_collator,
     )
 
     all_metrics = {"run_name": training_args.run_name}
