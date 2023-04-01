@@ -219,8 +219,8 @@ class ActorCritic(torch.nn.Module):
 
             # clean noise
             action_mask = torch.bitwise_or(instruction_labels!=-100,old_actions_log_probs_mask.bool())
-            actions_log_prob = actions_log_prob * action_mask
-            old_actions_log_probs = old_actions_log_probs * action_mask
+            # actions_log_prob = actions_log_prob * action_mask
+            # old_actions_log_probs = old_actions_log_probs * action_mask
 
             # compute entropy
             entropies = (actions_prob * actions_log_prob).sum(dim=-1)
@@ -233,8 +233,9 @@ class ActorCritic(torch.nn.Module):
             # compute PPO Loss -- Whan dimensions are different
             # (especially the values and the probs are
             #  multiplied directly with the reward)
-            ratios = (actions_log_prob - old_actions_log_probs).exp()
-            
+
+            ## fix rations mask
+            ratios = (actions_log_prob - old_actions_log_probs).exp() * action_mask
             
             advantages = rewards.unsqueeze(dim=-1) - old_rewards
             surr1 = advantages * ratios
@@ -249,8 +250,9 @@ class ActorCritic(torch.nn.Module):
                     torch.clamp(ratios, 1 - self.actor_eps_clip, 1 + self.actor_eps_clip)
                     * advantages
             )
+
             policy_loss = -torch.min(surr1, surr2) - self.beta_s * entropies.unsqueeze(dim=-1)
-            policy_loss = policy_loss.mean()
+            policy_loss = policy_loss.masked_select(action_mask).mean()
             loss = policy_loss + kl_div_loss
             loss += loss_lm_mean
 
@@ -331,6 +333,7 @@ class ActorCritic(torch.nn.Module):
         kwargs["attention_mask"] = attention_mask
         kwargs["output_scores"] = True
         kwargs["return_dict_in_generate"] = True
+        kwargs["temperature"] = 0.9
 
         #             input_ids=input_ids,
         #             attention_mask=attention_mask,

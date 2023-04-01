@@ -8,7 +8,7 @@ set -x
 port=$(shuf -i25000-30000 -n1)
 
 deepspeed --master_port $port --include localhost:0,5,6,7 src/run_rl_s2s.py \
-    --do_train \
+    --do_train False \
     --do_predict \
     --predict_with_generate \
     --model_name_or_path google/t5-large-lm-adapt \

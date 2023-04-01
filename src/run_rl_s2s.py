@@ -29,6 +29,7 @@ import datasets
 import nltk  # Here to have a nice missing dependency error message early on
 import numpy as np
 from datasets import load_dataset, load_metric
+import torch
 
 import transformers
 from filelock import FileLock
@@ -370,6 +371,7 @@ def main():
 
     model.critic.print_trainable_parameters()
     model.actor.print_trainable_parameters()
+    model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-rl/pytorch_model.bin"))
 
     if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
         if isinstance(tokenizer, MBartTokenizer):

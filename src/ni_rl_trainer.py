@@ -10,7 +10,7 @@ from datasets import load_metric
 from transformers.trainer_callback import TrainerCallback
 from collections import deque, namedtuple
 from datasets import Dataset
-
+import jsonlines
 skip_first_batches = None
 if is_accelerate_available():
     from accelerate import __version__ as accelerate_version
@@ -249,7 +249,7 @@ class NIRLTrainer(Seq2SeqTrainer):
             logger.info(f"  Num Episode = {args.episode}")
             logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
 
-            generated_data = self.ppo_generate_data(model, train_dataloader)
+            generated_data = self.ppo_generate_data(model, train_dataloader,i)
             # generated_data = [x._asdict() for x in list(generated_data)]
 
             def dataset_translator():
@@ -257,8 +257,9 @@ class NIRLTrainer(Seq2SeqTrainer):
                     yield generated_data[i]
 
             self.ex_train_dataset = Dataset.from_generator(dataset_translator)
-            self._inner_mini_training_loop(batch_size, args, resume_from_checkpoint, trial, ignore_keys_for_eval)
-
+            output= self._inner_mini_training_loop(batch_size, args, resume_from_checkpoint, trial, ignore_keys_for_eval)
+        return output
+    
     def _inner_mini_training_loop(
             self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
     ):
@@ -673,115 +674,129 @@ class NIRLTrainer(Seq2SeqTrainer):
         return TrainOutput(self.state.global_step, train_loss, metrics)
 
     @torch.no_grad()
-    def ppo_generate_data(self, model, epoch_iterator):
+    def ppo_generate_data(self, model, epoch_iterator,episode):
         memories = []
         # memories = deque([])
-        for step, inputs in tqdm(enumerate(epoch_iterator)):
+        
+        with jsonlines.open( os.path.join(self.args.output_dir, "replacedInstruction.json"),"a") as writer:
+            countReplaceInstruction = 0
+            writer.write({"begin":f"-------------------epoch {episode}-------------------"})
+            for step, inputs in tqdm(enumerate(epoch_iterator)):
 
             # inputs["max_length"] = model.config.max_length
 
             # TODO Temperature  inputs["temperature"] =self.args.temperature
             #
 
-            inputs = self._prepare_inputs(inputs)
+                inputs = self._prepare_inputs(inputs)
 
-            generated_instructions, generated_rewards_last_instructions = model.generate_ppo(**inputs)
+                generated_instructions, generated_rewards_last_instructions = model.generate_ppo(**inputs)
 
-            instructions = self.tokenizer.batch_decode(generated_instructions, skip_special_tokens=True)
-            instances = self.tokenizer.batch_decode(inputs["woinstruction_input_ids"], skip_special_tokens=True)
+                instructions = self.tokenizer.batch_decode(generated_instructions, skip_special_tokens=True)
+                instances = self.tokenizer.batch_decode(inputs["woinstruction_input_ids"], skip_special_tokens=True)
 
-            ### before_logits
-            generated_last_logits = model.get_actor_logits(input_ids=inputs["input_ids"],
-                                                           attention_mask=inputs["attention_mask"],
-                                                           labels=inputs["instruction_labels"],
-                                                           )
+                ### before_logits
+                generated_last_logits = model.get_actor_logits(input_ids=inputs["input_ids"],
+                                                            attention_mask=inputs["attention_mask"],
+                                                            labels=inputs["instruction_labels"],
+                                                            )
 
-            ### new logits
+                ### new logits
 
-            generated_instruction_labels = self.tokenizer(instructions, padding="max_length", return_tensors="pt",
-                                                          max_length=self.model.logits_shape)
-            label_mask = generated_instruction_labels["attention_mask"].bool()
-            generated_instruction_labels = generated_instruction_labels["input_ids"].masked_fill(~label_mask, -100)
-            generated_instruction_labels = self._prepare_inputs(generated_instruction_labels)
-            generated_new_logits = model.get_actor_logits(input_ids=inputs["input_ids"],
-                                                          attention_mask=inputs["attention_mask"],
-                                                          labels=generated_instruction_labels,
-                                                          )
+                generated_instruction_labels = self.tokenizer(instructions, padding="max_length", return_tensors="pt",
+                                                            max_length=self.model.logits_shape)
+                label_mask = generated_instruction_labels["attention_mask"].bool()
+                generated_instruction_labels = generated_instruction_labels["input_ids"].masked_fill(~label_mask, -100)
+                generated_instruction_labels = self._prepare_inputs(generated_instruction_labels)
+                generated_new_logits = model.get_actor_logits(input_ids=inputs["input_ids"],
+                                                            attention_mask=inputs["attention_mask"],
+                                                            labels=generated_instruction_labels,
+                                                            )
+                # TODO Last time mask
 
-            ## new instruction rewards
-            generated_items = [instructions[i] +"\n\n"+ instances[i] for i in range(len(instructions))]
 
-            generated_inputs = self.tokenizer(generated_items,padding=True ,truncation=True, return_tensors="pt")
-            generated_inputs["labels"] = inputs["labels"]
-            generated_inputs = self._prepare_inputs(generated_inputs)
-            generated_rewards_newest_instructions = model.get_rewards(**generated_inputs)
+                ## new instruction rewards
+                generated_items = [instructions[i] +"\n\n"+ instances[i] for i in range(len(instructions))]
 
-            for i in range(len(generated_rewards_newest_instructions)):
+                generated_inputs = self.tokenizer(generated_items,padding=True ,truncation=True, return_tensors="pt")
+                generated_inputs["labels"] = inputs["labels"]
+                generated_inputs = self._prepare_inputs(generated_inputs)
+                generated_rewards_newest_instructions = model.get_rewards(**generated_inputs)
 
-                item = inputs["instructed_input_ids"][i]
-                instance = inputs["input_ids"][i]
-                instruction = inputs["instruction_labels"][i]
-                reward = generated_rewards_last_instructions.unsqueeze(dim=-1)[i]
-                logit = generated_last_logits[i]
-                mask = (inputs["instruction_labels"][i]!=-100)
+                for i in range(len(generated_rewards_newest_instructions)):
 
-                if generated_rewards_newest_instructions[i].item() > generated_rewards_last_instructions[i].item() and generated_rewards_newest_instructions[i].item()>0.1:
-                    item = generated_inputs["input_ids"][i]
-                    instruction = generated_instruction_labels[i]
-                    reward = generated_rewards_newest_instructions.unsqueeze(dim=-1)[i]
-                    logit = generated_new_logits[i]
-                    mask = (generated_instruction_labels[i]!=-100)
+                    item = inputs["instructed_input_ids"][i]
+                    instance = inputs["input_ids"][i]
+                    instruction = inputs["instruction_labels"][i]
+                    reward = generated_rewards_last_instructions.unsqueeze(dim=-1)[i]
+                    logit = generated_last_logits[i]
+                    mask = (inputs["instruction_labels"][i]!=-100)
 
-                # memories["instance"].append(instance.detach().cpu().tolist())
-                # memories["instruction"].append(instruction.detach().cpu().tolist())
-                # memories["item"].append(item.detach().cpu().tolist())
-                # memories["labels"].append(inputs["labels"][i].detach().cpu().tolist())
-                # memories["reward"].append(reward.detach().cpu().tolist())
-                # memories["logits"].append(logit.detach().cpu().tolist())
-                # memories["logits_mask"].append(mask.detach().cpu().tolist())
+                    if generated_rewards_newest_instructions[i].item() > generated_rewards_last_instructions[i].item() and generated_rewards_newest_instructions[i].item()>0.1:
+                        item = generated_inputs["input_ids"][i]
+                        instruction = generated_instruction_labels[i]
+                        reward = generated_rewards_newest_instructions.unsqueeze(dim=-1)[i]
+                        logit = generated_new_logits[i]
+                        mask = (generated_instruction_labels[i]!=-100)
+                        
+                        writer.write(
+                            {"Original":self.tokenizer.decode(inputs["instruction_labels"][i].masked_fill(inputs["instruction_labels"][i]==-100, self.tokenizer.pad_token_id)),
+                            "OriginalScore":generated_rewards_last_instructions[i].item(),
+                            "Generated":instructions[i],
+                            "GeneratedScore":generated_rewards_newest_instructions[i].item()
+                            }
+                        )
 
-                # memories.append(
-                #     Memory(
-                #         *map(
-                #             lambda x: x.detach().cpu(),
-                #             (
-                #                 instance,
-                #                 instruction,
-                #                 item,
-                #                 inputs["labels"][i],  # diversity
-                #                 reward,
-                #                 logit,
-                #                 mask,
-                #             ),
-                #         )
-                #     )
-                # )
-                # "labels":self.tokenizer.batch_decode(inputs["labels"][i].masked_fill(inputs["labels"]==-100, self.tokenizer.pad_token_id).detach().cpu(),skip_special_tokens=True),
-                assert len(inputs["labels"][i].shape)==1,f"labels assert {inputs['labels'][i].shape}"
-                assert len(reward.shape)==1,f"reward assert{reward.shape}{generated_rewards_last_instructions}"
-                assert len(logit.shape)==1,f"logit assert{logit.shape}"
-                assert len(mask.shape)==1,f"logits_mask assert{mask.shape}"
-                assert len(instruction.shape)==1,f"instruction assert{instruction.shape}"
-                
-                memory = {
-                    "instance":[self.tokenizer.decode(instance.detach().cpu(),skip_special_tokens=True)],
-                    "instruction":instruction.squeeze(dim=0).detach().cpu(),
-                    "item":[self.tokenizer.decode(item.detach().cpu(),skip_special_tokens=True)],
-                    "labels": inputs["labels"][i].detach().cpu(),
-                    "reward":reward.detach().cpu().float(),
-                    "logits":logit.detach().cpu().float(),
-                    "logits_mask":mask.detach().cpu(),
-                }
+                    # memories["instance"].append(instance.detach().cpu().tolist())
+                    # memories["instruction"].append(instruction.detach().cpu().tolist())
+                    # memories["item"].append(item.detach().cpu().tolist())
+                    # memories["labels"].append(inputs["labels"][i].detach().cpu().tolist())
+                    # memories["reward"].append(reward.detach().cpu().tolist())
+                    # memories["logits"].append(logit.detach().cpu().tolist())
+                    # memories["logits_mask"].append(mask.detach().cpu().tolist())
 
-                memory_list = [None for i in range(torch.distributed.get_world_size())]
-                torch.distributed.all_gather_object(memory_list, memory)
-                memories.extend(
-                    memory_list 
-                )
-                # print(memory_list)
-                # memories.append(memory)
-            if step >= self.args.max_rl_sample:
-                break
+                    # memories.append(
+                    #     Memory(
+                    #         *map(
+                    #             lambda x: x.detach().cpu(),
+                    #             (
+                    #                 instance,
+                    #                 instruction,
+                    #                 item,
+                    #                 inputs["labels"][i],  # diversity
+                    #                 reward,
+                    #                 logit,
+                    #                 mask,
+                    #             ),
+                    #         )
+                    #     )
+                    # )
+                    # "labels":self.tokenizer.batch_decode(inputs["labels"][i].masked_fill(inputs["labels"]==-100, self.tokenizer.pad_token_id).detach().cpu(),skip_special_tokens=True),
+                    assert len(inputs["labels"][i].shape)==1,f"labels assert {inputs['labels'][i].shape}"
+                    assert len(reward.shape)==1,f"reward assert{reward.shape}{generated_rewards_last_instructions}"
+                    assert len(logit.shape)==1,f"logit assert{logit.shape}"
+                    assert len(mask.shape)==1,f"logits_mask assert{mask.shape}"
+                    assert len(instruction.shape)==1,f"instruction assert{instruction.shape}"
+                    
+                    memory = {
+                        "instance":[self.tokenizer.decode(instance.detach().cpu(),skip_special_tokens=True)],
+                        "instruction":instruction.squeeze(dim=0).detach().cpu(),
+                        "item":[self.tokenizer.decode(item.detach().cpu(),skip_special_tokens=True)],
+                        "labels": inputs["labels"][i].detach().cpu(),
+                        "reward":reward.detach().cpu().float(),
+                        "logits":logit.detach().cpu().float(),
+                        "logits_mask":mask.detach().cpu(),
+                    }
+
+                    # memory_list = [None for i in range(torch.distributed.get_world_size())]
+                    # torch.distributed.all_gather_object(memory_list, memory)
+                    # memories.extend(
+                    #     memory_list 
+                    # )
+                    # print(memory_list)
+                    memories.append(memory)
+                if step >= self.args.max_rl_sample:
+                    break
         return memories
 
     def evaluation_loop(
@@ -806,7 +821,7 @@ class NIRLTrainer(Seq2SeqTrainer):
             # XXX: eval doesn't have `resume_from_checkpoint` arg but we should be able to do eval
             # from the checkpoint eventually
             deepspeed_engine, _, _ = deepspeed_init(
-                self, num_training_steps=0, resume_from_checkpoint=None, inference=True
+                self, num_training_steps=0, resume_from_checkpoint=None
             )
             self.model = deepspeed_engine.module
             self.model_wrapped = deepspeed_engine

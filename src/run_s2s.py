@@ -49,7 +49,7 @@ from transformers import (
 )
 from transformers.file_utils import is_offline_mode
 from transformers.trainer_utils import get_last_checkpoint
-from ni_collator import DataCollatorForNI
+from ni_collator import DataCollatorForNI,DataCollatorForNIInstruction
 from ni_trainer import NITrainer, DenserEvalCallback
 from compute_metrics import compute_metrics, compute_grouped_metrics
 
@@ -230,6 +230,10 @@ class DataTrainingArguments:
         metadata={"help": "tk_instruct will train a model combining all valid instruction encodings. This will overwrite the other settings about instruction encoding."} 
     )
     
+    instruction_generation: Optional[bool] = field(
+        default=False,
+        metadata={"help": "tk_instruct will train a model combining all valid instruction encodings. This will overwrite the other settings about instruction encoding."} 
+    )
     def __post_init__(self):
         pass
 
@@ -348,9 +352,6 @@ def main():
     
     model.print_trainable_parameters()
 
-    model.generate()
-
-
     if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
         if isinstance(tokenizer, MBartTokenizer):
             model.config.decoder_start_token_id = tokenizer.lang_code_to_id[data_args.lang]
@@ -424,7 +425,8 @@ def main():
 
     # Data collator
     label_pad_token_id = -100 if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id
-    data_collator = DataCollatorForNI(
+    if data_args.instruction_generation:
+        data_collator = DataCollatorForNIInstruction(
         tokenizer,
         model=model,
         padding="max_length" if data_args.pad_to_max_length else "longest",
@@ -439,6 +441,22 @@ def main():
         add_explanation=data_args.add_explanation,
         tk_instruct=data_args.tk_instruct
     )
+    else:
+        data_collator = DataCollatorForNI(
+            tokenizer,
+            model=model,
+            padding="max_length" if data_args.pad_to_max_length else "longest",
+            max_source_length=data_args.max_source_length,
+            max_target_length=data_args.max_target_length,
+            label_pad_token_id=label_pad_token_id,
+            pad_to_multiple_of=8 if training_args.fp16 else None,
+            add_task_name=data_args.add_task_name,
+            add_task_definition=data_args.add_task_definition,
+            num_pos_examples=data_args.num_pos_examples,
+            num_neg_examples=data_args.num_neg_examples,
+            add_explanation=data_args.add_explanation,
+            tk_instruct=data_args.tk_instruct
+        )
     # we don't want to remove unused columns because we will prepare each batch during training, 
     # and some of the information will aslo be used in evaluation.
     training_args.remove_unused_columns = False 
