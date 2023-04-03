@@ -3,7 +3,7 @@ from typing import Tuple, Optional
 
 import torch
 from peft import get_peft_model, TaskType, LoraConfig
-from torch.nn import CrossEntropyLoss
+from torch.nn import CrossEntropyLoss,KLDivLoss
 from transformers import AutoModelForSeq2SeqLM
 from transformers.utils import ModelOutput
 
@@ -68,6 +68,10 @@ class RLSeq2SeqLMOutput(ModelOutput):
     encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
     prompt_logits: Optional[torch.FloatTensor] = None
     value_logits: Optional[torch.FloatTensor] = None
+    policy_loss: Optional[torch.FloatTensor] = None
+    kl_loss: Optional[torch.FloatTensor] = None
+    critic_loss: Optional[torch.FloatTensor] = None
+
 
 
 class ActorCritic(torch.nn.Module):
@@ -107,13 +111,51 @@ class ActorCritic(torch.nn.Module):
 
         self.actor_eps_clip = model_args.actor_eps_clip
         self.beta_s = model_args.beta_s
+        self.pretrain_s = model_args.pretrain_s
+
         self.critic_eps_clip = model_args.actor_eps_clip
         self.logits_shape = model_args.logits_shape
         self.eps = 1e-8
         self.config =config
 
+
+        sft = AutoModelForSeq2SeqLM.from_pretrained(
+            model_args.model_name_or_path,
+            config=config,
+        )
+        self.sft = get_peft_model(sft, peft_config)
+
+
+        for param in self.sft.parameters():
+            param.requires_grad = False
+
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
         return self.critic._shift_right(labels)
+
+    @torch.no_grad()
+    def getSFTlogits(self,
+                     input_ids,attention_mask,
+                     instruction_decoder_input_ids,
+                     decoder_attention_mask,
+                     instruction_labels,
+                     use_cache,
+                     output_attentions,
+                     output_hidden_states,
+                     return_dict):
+        
+        output_sft = self.sft(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            decoder_input_ids=instruction_decoder_input_ids,
+            decoder_attention_mask=decoder_attention_mask,
+            labels=instruction_labels,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        return output_sft
 
     def forward(
             self,
@@ -160,7 +202,7 @@ class ActorCritic(torch.nn.Module):
         """
         # use a single forward on the whole sequence
         # to get pi(y | x) and ignore predicted output
-        output_actor = self.actor.forward(
+        output_actor = self.actor(
             input_ids=input_ids,
             attention_mask=attention_mask,
             decoder_input_ids=instruction_decoder_input_ids,
@@ -172,7 +214,7 @@ class ActorCritic(torch.nn.Module):
             return_dict=return_dict,
         )
 
-        output_critic = self.critic.forward(
+        output_critic = self.critic(
             input_ids=instructed_input_ids,
             attention_mask=instructed_attention_mask,
             decoder_input_ids=decoder_input_ids,
@@ -183,18 +225,25 @@ class ActorCritic(torch.nn.Module):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict, )
 
+
         loss = None
         rewards = None
+        policy_loss = None
+        kl_div_loss = None
+        loss_lm_mean = None
 
         if labels is not None:
             loss_fct = CrossEntropyLoss(ignore_index=-100, reduction="none")
             loss_fct_mean = CrossEntropyLoss(ignore_index=-100)
+            # kl_loss_mean = KLDivLoss(reduction="batchmean")
 
             loss_lm = loss_fct(output_critic.logits.view(-1, output_critic.logits.size(-1)), labels.view(-1))
             loss_lm_mean = loss_fct_mean(output_critic.logits.view(-1, output_critic.logits.size(-1)), labels.view(-1))
             
-            values = torch.exp(-loss_lm.clone().detach())
-            rewards = torch.exp(-(loss_lm.clone().detach().view(output_critic.logits.shape[0], -1).sum(dim=-1) * (
+            # values = torch.exp(-loss_lm.clone())
+            # Is there need detach()?
+
+            rewards = torch.exp(-(loss_lm.view(output_critic.logits.shape[0], -1).sum(dim=-1) * (
                     (labels != -100).sum(dim=-1)))/10)
 
 
@@ -205,28 +254,51 @@ class ActorCritic(torch.nn.Module):
                 value_logits=rewards
             )
 
+            output_stf = self.getSFTlogits(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                instruction_decoder_input_ids=instruction_decoder_input_ids,
+                decoder_attention_mask=decoder_attention_mask,
+                instruction_labels=instruction_labels,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+
+            sft_logits = output_stf.logits
+
+            sft_prob = torch.softmax(sft_logits,dim=-1)
+            sft_log_prob = torch.log(sft_prob + self.eps)
+
             actions_logits = output_actor.logits
 
+            action_pretrain_loss = loss_fct_mean(actions_logits.view(-1, actions_logits.size(-1)), instruction_labels.view(-1))
             # clean noise
             # actions_logits = actions_logits * (labels.unsqueeze(dim=-1)!=-100).float()
             # old_actions_log_probs = old_actions_log_probs * (labels.unsqueeze(dim=-1)!=-100).float()
 
             # get action log prob
-            actions_prob = (
-                torch.softmax(actions_logits, dim=-1).max(dim=-1).values
+            actions_prob_all = (
+                torch.softmax(actions_logits, dim=-1)
             )
+            actions_log_prob_all = torch.log(actions_prob_all + self.eps)
+
+
+            actions_prob = actions_prob_all.max(dim=-1).values
             actions_log_prob = torch.log(actions_prob + self.eps)
 
             # clean noise
-            action_mask = torch.bitwise_or(instruction_labels!=-100,old_actions_log_probs_mask.bool())
+            action_mask = torch.bitwise_and(instruction_labels!=-100,old_actions_log_probs_mask.bool())
             # actions_log_prob = actions_log_prob * action_mask
             # old_actions_log_probs = old_actions_log_probs * action_mask
 
             # compute entropy
-            entropies = (actions_prob * actions_log_prob).sum(dim=-1)
+            entropies = ((actions_prob * actions_log_prob)*( action_mask.float())).sum(dim=-1)
+
             kl_div_loss = (
-                (actions_prob * (old_actions_log_probs - actions_log_prob))
-                    .sum(dim=-1)
+                ((actions_prob_all * (actions_log_prob_all - sft_log_prob))  * action_mask.unsqueeze(dim=-1).float())
+                    .sum(dim=-1).sum(dim=-1)
                     .mean()
             )
 
@@ -235,7 +307,7 @@ class ActorCritic(torch.nn.Module):
             #  multiplied directly with the reward)
 
             ## fix rations mask
-            ratios = (actions_log_prob - old_actions_log_probs).exp() * action_mask
+            ratios = (actions_log_prob - old_actions_log_probs).exp() * action_mask.float()
             
             advantages = rewards.unsqueeze(dim=-1) - old_rewards
             surr1 = advantages * ratios
@@ -253,21 +325,26 @@ class ActorCritic(torch.nn.Module):
 
             policy_loss = -torch.min(surr1, surr2) - self.beta_s * entropies.unsqueeze(dim=-1)
             policy_loss = policy_loss.masked_select(action_mask).mean()
-            loss = policy_loss + kl_div_loss
-            loss += loss_lm_mean
+            loss = policy_loss + self.beta_s * kl_div_loss
 
-            ### reward loss
-            # value_loss_clipped = old_values + (values - old_values).clamp(
-            #     -self.critic_eps_clip, self.critic_eps_clip
-            # )
-            # value_loss1 = (value_loss_clipped - rewards) ** 2
-            # value_loss2 = (values - rewards) ** 2
-            # value_loss = torch.max(value_loss1, value_loss2).mean()
+            ## reward loss
+            value_loss_clipped = old_rewards + (rewards - old_rewards).clamp(
+                -self.critic_eps_clip, self.critic_eps_clip
+            )
+            value_loss1 = (value_loss_clipped - rewards) ** 2
+            value_loss2 = (old_rewards - rewards) ** 2
+            value_loss = torch.max(value_loss1, value_loss2).mean()
+
+            loss += value_loss
+            # loss += self.pretrain_s * (action_pretrain_loss + loss_lm_mean)
 
         return RLSeq2SeqLMOutput(
             loss=loss,
             prompt_logits=output_actor.logits,
-            value_logits=rewards
+            value_logits=rewards,
+            policy_loss =policy_loss,
+            kl_loss=kl_div_loss,
+            critic_loss=value_loss
         )
 
     @torch.no_grad()
@@ -275,7 +352,7 @@ class ActorCritic(torch.nn.Module):
         if decoder_input_ids is None:
             decoder_input_ids = self.critic.prepare_decoder_input_ids_from_labels(labels)
 
-        output = self.critic.forward(
+        output = self.critic(
             input_ids=input_ids,
             attention_mask=attention_mask,
             decoder_input_ids=decoder_input_ids,
@@ -296,7 +373,7 @@ class ActorCritic(torch.nn.Module):
         if decoder_input_ids is None:
             decoder_input_ids = self.critic.prepare_decoder_input_ids_from_labels(labels)
 
-        output_critic = self.critic.forward(
+        output_critic = self.critic(
             input_ids=input_ids,
             attention_mask=attention_mask,
             decoder_input_ids=decoder_input_ids,
@@ -334,6 +411,7 @@ class ActorCritic(torch.nn.Module):
         kwargs["output_scores"] = True
         kwargs["return_dict_in_generate"] = True
         kwargs["temperature"] = 0.9
+        kwargs["max_length"] = self.logits_shape - 1 
 
         #             input_ids=input_ids,
         #             attention_mask=attention_mask,
@@ -347,6 +425,39 @@ class ActorCritic(torch.nn.Module):
 
         rewards = self.get_rewards(instructed_input_ids,instructed_attention_mask,decoder_input_ids=decoder_input_ids,labels=labels)
         return output_actor.sequences,rewards
+
+    @torch.no_grad()
+    def generate_instruction(
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: torch.Tensor,
+            **kwargs,
+
+    ):
+        """Generate actions, actions_logits, values and sequences from states
+
+        Args:
+            states (torch.Tensor): user inputs
+            state_mask (torch.Tensor): Mask for the states of the environment
+
+        Returns:
+            actions (torch.Tensor): Actions generated from the states
+            actions_logits (torch.Tensor): Logits for the actions generated
+                from the states (i.e. pi(y | x))
+            values (torch.Tensor): Values generated by the critic model
+                for the actions generated by the actor (i.e. V(x))
+            sequences (torch.Tensor): Sequences generated from the states
+                as [states, actions]
+        """
+        kwargs["input_ids"] = input_ids
+        kwargs["attention_mask"] = attention_mask
+        kwargs["temperature"] = 0.9
+        kwargs["max_length"] =  self.logits_shape - 1 
+
+        output_actor = self.actor.generate(
+            **kwargs
+        )
+        return output_actor
 
     @torch.no_grad()
     def generate(
@@ -373,9 +484,12 @@ class ActorCritic(torch.nn.Module):
         """
         kwargs["input_ids"] = input_ids
         kwargs["attention_mask"] = attention_mask
+        kwargs["max_length"] =  self.logits_shape - 1 
+
         output_critic = self.critic.generate(
             **kwargs
         )
+
         return output_critic
 
         # # generate prompts -> actor

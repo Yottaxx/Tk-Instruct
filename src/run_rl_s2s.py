@@ -96,7 +96,10 @@ class ModelArguments:
         default=0.2, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
     )
     beta_s: Optional[float] = field(
-        default=0.1, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+        default=0.02, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+    )
+    pretrain_s: Optional[float] = field(
+        default=5.8, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
     )
     critic_eps_clip: Optional[float] = field(
         default=0.2, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
@@ -269,6 +272,10 @@ class NITrainingArguments(Seq2SeqTrainingArguments):
         metadata={"help": "If specifid, the model will do more evaluation at the beginning of training."}
     )
 
+    bi_generate: Optional[bool] = field(
+        default=False,
+        metadata={"help": "If specifid, the model will do more evaluation at the beginning of training."}
+    )
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -368,10 +375,16 @@ def main():
     model = ActorCritic(model_args=model_args, config=config, peft_config=peft_config)
     model.actor.resize_token_embeddings(len(tokenizer))
     model.critic.resize_token_embeddings(len(tokenizer))
+    model.sft.resize_token_embeddings(len(tokenizer))
 
     model.critic.print_trainable_parameters()
     model.actor.print_trainable_parameters()
-    model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-rl/pytorch_model.bin"))
+    # model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-rl/pytorch_model.bin"))
+
+
+    model.sft.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch2_instruction_gneration/pytorch_model.bin",map_location='cpu'))
+    model.actor.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch2_instruction_gneration/pytorch_model.bin",map_location='cpu'))
+    model.critic.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-xl-large-adapt-lora-experiment-epoch2/pytorch_model.bin",map_location='cpu'))
 
     if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
         if isinstance(tokenizer, MBartTokenizer):
