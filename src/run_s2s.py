@@ -131,6 +131,7 @@ class DataTrainingArguments:
         default=None,
         metadata={"help": "The number of processes to use for the preprocessing."},
     )
+    
     max_source_length: Optional[int] = field(
         default=1024,
         metadata={
@@ -234,6 +235,7 @@ class DataTrainingArguments:
         default=False,
         metadata={"help": "tk_instruct will train a model combining all valid instruction encodings. This will overwrite the other settings about instruction encoding."} 
     )
+
     def __post_init__(self):
         pass
 
@@ -350,8 +352,11 @@ def main():
 
     model = get_peft_model(model, peft_config)
     
+
     model.print_trainable_parameters()
 
+    # import torch
+    # model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-base-adapt-lora-experiment-epoch8/checkpoint-3000/pytorch_model.bin",map_location='cpu'))
     if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
         if isinstance(tokenizer, MBartTokenizer):
             model.config.decoder_start_token_id = tokenizer.lang_code_to_id[data_args.lang]

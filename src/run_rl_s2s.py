@@ -281,7 +281,7 @@ def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
-
+    
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, NITrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
@@ -379,12 +379,20 @@ def main():
 
     model.critic.print_trainable_parameters()
     model.actor.print_trainable_parameters()
-    # model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-rl/pytorch_model.bin"))
+    # model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-rl-ppo-ptx-sft/checkpoint-66-134/pytorch_model.bin",map_location='cpu'))
 
+    #  0  -> 39 -> 79
+    # double  39 -> 42 ->  43.0379
+    # single 2epoch w 2epoch -> 39.8566
+    # single 2epoch w 8epoch ->  42.1511
+    # single 8epoch w 8epoch ->  --
 
-    model.sft.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch2_instruction_gneration/pytorch_model.bin",map_location='cpu'))
+    # large 45.1956  8 epoch 47.0
+    # base 42.0831
+
+    # model.sft.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch2_instruction_gneration/pytorch_model.bin",map_location='cpu'))
     model.actor.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch2_instruction_gneration/pytorch_model.bin",map_location='cpu'))
-    model.critic.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-xl-large-adapt-lora-experiment-epoch2/pytorch_model.bin",map_location='cpu'))
+    model.critic.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-adapt-lora-experiment-epoch8/pytorch_model.bin",map_location='cpu'))
 
     if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
         if isinstance(tokenizer, MBartTokenizer):
