@@ -115,6 +115,8 @@ class ActorCritic(torch.nn.Module):
 
         self.critic_eps_clip = model_args.actor_eps_clip
         self.logits_shape = model_args.logits_shape
+        self.ppo_beam = model_args.ppo_beam
+
         self.eps = 1e-8
         self.config =config
 
@@ -142,7 +144,8 @@ class ActorCritic(torch.nn.Module):
                      output_attentions,
                      output_hidden_states,
                      return_dict):
-        
+
+        self.sft.eval()
         output_sft = self.sft(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -243,9 +246,8 @@ class ActorCritic(torch.nn.Module):
             # values = torch.exp(-loss_lm.clone())
             # Is there need detach()?
 
-            rewards = torch.exp(-(loss_lm.view(output_critic.logits.shape[0], -1).sum(dim=-1) * (
-                    (labels != -100).sum(dim=-1)))/10)
-
+            rewards = (loss_lm.view(output_critic.logits.shape[0], -1).sum(dim=-1) * (
+                    (labels != -100).sum(dim=-1))).detach()
 
             if not self.training:
                 return RLSeq2SeqLMOutput(
@@ -309,7 +311,7 @@ class ActorCritic(torch.nn.Module):
             ## fix rations mask
             ratios = (actions_log_prob - old_actions_log_probs).exp() * action_mask.float()
             
-            advantages = rewards.unsqueeze(dim=-1) - old_rewards
+            advantages = (torch.log(old_rewards) - torch.log(rewards.unsqueeze(dim=-1)))
             surr1 = advantages * ratios
 
             # advantages = rewards.unsqueeze(dim=-1) - old_rewards
@@ -328,23 +330,23 @@ class ActorCritic(torch.nn.Module):
             loss = policy_loss + self.beta_s * kl_div_loss
 
             ## reward loss
-            value_loss_clipped = old_rewards + (rewards - old_rewards).clamp(
-                -self.critic_eps_clip, self.critic_eps_clip
-            )
-            value_loss1 = (value_loss_clipped - rewards) ** 2
-            value_loss2 = (old_rewards - rewards) ** 2
-            value_loss = torch.max(value_loss1, value_loss2).mean()
+            # value_loss_clipped = old_rewards + (rewards - old_rewards).clamp(
+            #     -self.critic_eps_clip, self.critic_eps_clip
+            # )
+            # value_loss1 = (value_loss_clipped - rewards) ** 2
+            # value_loss2 = (old_rewards - rewards) ** 2
+            # value_loss = torch.max(value_loss1, value_loss2).mean()
 
-            loss += value_loss
+            loss += loss_lm_mean
             # loss += self.pretrain_s * (action_pretrain_loss + loss_lm_mean)
 
         return RLSeq2SeqLMOutput(
             loss=loss,
             prompt_logits=output_actor.logits,
             value_logits=rewards,
-            policy_loss =policy_loss,
+            policy_loss =(-torch.min(surr1, surr2)).masked_select(action_mask).mean(),
             kl_loss=kl_div_loss,
-            critic_loss=value_loss
+            critic_loss=loss_lm_mean
         )
 
     @torch.no_grad()
@@ -382,10 +384,10 @@ class ActorCritic(torch.nn.Module):
 
         loss_fct = CrossEntropyLoss(ignore_index=-100, reduction="none")
         loss_lm = loss_fct(output_critic.logits.view(-1, output_critic.logits.size(-1)), labels.view(-1))
-        rewards = torch.exp(-(loss_lm.clone().detach().view(output_critic.logits.shape[0], -1).sum(dim=-1) * (
-                (labels != -100).sum(dim=-1)))/10)
+        rewards = (loss_lm.clone().detach().view(output_critic.logits.shape[0], -1).sum(dim=-1) * (
+                (labels != -100).sum(dim=-1)))
 
-        loss_lm = loss_lm.mean()
+        # rewards = loss_lm.cumsum(dim=-1) / (labels != -100).cumsum(dim=-1)
 
         return rewards
 
@@ -410,8 +412,11 @@ class ActorCritic(torch.nn.Module):
         kwargs["attention_mask"] = attention_mask
         kwargs["output_scores"] = True
         kwargs["return_dict_in_generate"] = True
-        kwargs["temperature"] = 0.9
+        # kwargs["temperature"] = 0.9
         kwargs["max_length"] = self.logits_shape - 1 
+        kwargs["num_beams"] = self.ppo_beam
+        kwargs["num_return_sequences"] = self.ppo_beam
+        kwargs["do_sample"] = True
 
         #             input_ids=input_ids,
         #             attention_mask=attention_mask,
@@ -451,7 +456,7 @@ class ActorCritic(torch.nn.Module):
         """
         kwargs["input_ids"] = input_ids
         kwargs["attention_mask"] = attention_mask
-        kwargs["temperature"] = 0.9
+        kwargs["temperature"] =1.0
         kwargs["max_length"] =  self.logits_shape - 1 
 
         output_actor = self.actor.generate(

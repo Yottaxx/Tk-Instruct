@@ -96,7 +96,7 @@ class ModelArguments:
         default=0.2, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
     )
     beta_s: Optional[float] = field(
-        default=0.02, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+        default=0.005, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
     )
     pretrain_s: Optional[float] = field(
         default=5.8, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
@@ -106,6 +106,10 @@ class ModelArguments:
     )
     logits_shape: Optional[int] = field(
         default=256, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+    )
+
+    ppo_beam: Optional[int] = field(
+        default=3, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
     )
 
     use_fast_tokenizer: bool = field(
@@ -379,7 +383,7 @@ def main():
 
     model.critic.print_trainable_parameters()
     model.actor.print_trainable_parameters()
-    # model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-rl-ppo-ptx-sft/checkpoint-66-134/pytorch_model.bin",map_location='cpu'))
+    model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-rl-ppo-ptx-sft/checkpoint-34-15/pytorch_model.bin",map_location='cpu'))
 
     #  0  -> 39 -> 79
     # double  39 -> 42 ->  43.0379
@@ -390,9 +394,10 @@ def main():
     # large 45.1956  8 epoch 47.0
     # base 42.0831
 
-    # model.sft.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch2_instruction_gneration/pytorch_model.bin",map_location='cpu'))
-    model.actor.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch2_instruction_gneration/pytorch_model.bin",map_location='cpu'))
-    model.critic.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-adapt-lora-experiment-epoch8/pytorch_model.bin",map_location='cpu'))
+    # beta005 18epoch  43.31
+    # model.sft.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch8_instruction_gneration/pytorch_model.bin",map_location='cpu'))
+    # model.actor.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch8_instruction_gneration/pytorch_model.bin",map_location='cpu'))
+    # model.critic.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-adapt-lora-experiment-epoch8/pytorch_model.bin",map_location='cpu'))
 
     if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
         if isinstance(tokenizer, MBartTokenizer):
@@ -522,6 +527,7 @@ def main():
         return result
 
     # Initialize our Trainer
+    training_args.ppo_beam = model_args.ppo_beam
     trainer = NIRLTrainer(
         model=model,
         args=training_args,
@@ -534,7 +540,6 @@ def main():
         ex_train_dataset = None,
         ex_data_collator =ex_data_collator,
     )
-
     all_metrics = {"run_name": training_args.run_name}
 
     # Training

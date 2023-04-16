@@ -90,6 +90,7 @@ class NIRLTrainer(Seq2SeqTrainer):
         self.ex_train_dataset = ex_train_dataset
         self.ex_data_collator = ex_data_collator
         self.current_episode = 0 
+        self.ppo_beam = args.ppo_beam
     # rewrite the evaluation loop, with customized call to compute_metrics
     def _get_ex_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
         if self.ex_train_dataset is None or not has_length(self.ex_train_dataset):
@@ -1460,27 +1461,31 @@ class NIRLTrainer(Seq2SeqTrainer):
 
                 ### new logits
 
-                generated_instruction_labels = self.tokenizer(instructions, padding="max_length", return_tensors="pt",
+                generated_instruction_labels = self.tokenizer(instructions, padding="max_length", return_tensors="pt",truncation=True,
                                                             max_length=self.model.logits_shape)
+                # print(instructions)
+                # print(generated_instruction_labels["input_ids"].shape)
                 label_mask = generated_instruction_labels["attention_mask"].bool()
                 generated_instruction_labels = generated_instruction_labels["input_ids"].masked_fill(~label_mask, -100)
                 generated_instruction_labels = self._prepare_inputs(generated_instruction_labels)
-                generated_new_logits = model.get_actor_logits(input_ids=inputs["input_ids"],
-                                                            attention_mask=inputs["attention_mask"],
+                generated_new_logits = model.get_actor_logits(input_ids=inputs["input_ids"].unsqueeze(dim=1).repeat_interleave(self.ppo_beam,dim=1).view(-1,inputs["input_ids"].shape[-1]),
+                                                            attention_mask=inputs["attention_mask"].unsqueeze(dim=1).repeat_interleave(self.ppo_beam,dim=1).view(-1,inputs["attention_mask"].shape[-1]),
                                                             labels=generated_instruction_labels,
                                                             )
                 # TODO Last time mask
 
 
                 ## new instruction rewards
-                generated_items = [instructions[i] +"\n\n"+ instances[i] for i in range(len(instructions))]
+                generated_items = [instructions[i] +"\n\n"+ instances[int(i/self.ppo_beam)] for i in range(len(instructions))]
 
-                generated_inputs = self.tokenizer(generated_items,padding=True ,truncation=True, return_tensors="pt")
-                generated_inputs["labels"] = inputs["labels"]
+                generated_inputs = self.tokenizer(generated_items,padding=True ,truncation=True, return_tensors="pt",max_length=self.data_collator.max_source_length)
+                generated_inputs["labels"] = inputs["labels"].unsqueeze(dim=1).repeat_interleave(self.ppo_beam,dim=1).view(-1,inputs["labels"].shape[-1])
                 generated_inputs = self._prepare_inputs(generated_inputs)
                 generated_rewards_newest_instructions = model.get_rewards(**generated_inputs)
 
-                for i in range(len(generated_rewards_newest_instructions)):
+                max_rewards_newest_indices = generated_rewards_newest_instructions.view(-1,self.ppo_beam).max(dim=-1)[1]
+
+                for i in range(len(generated_rewards_last_instructions)):
 
                     item = inputs["instructed_input_ids"][i]
                     instance = inputs["input_ids"][i]
@@ -1492,17 +1497,18 @@ class NIRLTrainer(Seq2SeqTrainer):
                     # set True for optimize instruction generation
                     if True :
                     # if generated_rewards_newest_instructions[i].item() > generated_rewards_last_instructions[i].item() and generated_rewards_newest_instructions[i].item()>0.1:
-                        item = generated_inputs["input_ids"][i]
-                        instruction = generated_instruction_labels[i]
-                        reward = generated_rewards_newest_instructions.unsqueeze(dim=-1)[i]
-                        logit = generated_new_logits[i]
-                        mask = (generated_instruction_labels[i]!=-100)
+                        newest_index = self.ppo_beam * i + max_rewards_newest_indices[i]
+                        item = generated_inputs["input_ids"][newest_index]
+                        instruction = generated_instruction_labels[newest_index]
+                        reward = generated_rewards_newest_instructions.unsqueeze(dim=-1)[newest_index]
+                        logit = generated_new_logits[newest_index]
+                        mask = (generated_instruction_labels[newest_index]!=-100)
                         
                         writer.write(
                             {"Original":self.tokenizer.decode(inputs["instruction_labels"][i].masked_fill(inputs["instruction_labels"][i]==-100, self.tokenizer.pad_token_id),skip_special_tokens=True),
                             "OriginalScore":generated_rewards_last_instructions[i].item(),
-                            "Generated":instructions[i],
-                            "GeneratedScore":generated_rewards_newest_instructions[i].item()
+                            "Generated":instructions[newest_index],
+                            "GeneratedScore":generated_rewards_newest_instructions[newest_index].item()
                             }
                         )
 
@@ -1789,7 +1795,7 @@ class NIRLTrainer(Seq2SeqTrainer):
         gen_kwargs["synced_gpus"] = (
             gen_kwargs["synced_gpus"] if gen_kwargs.get("synced_gpus") is not None else default_synced_gpus
         )
-
+        # print(gen_kwargs["max_length"])
 
         if not self.args.bi_generate:
             if "instructed_input_ids" in inputs:
