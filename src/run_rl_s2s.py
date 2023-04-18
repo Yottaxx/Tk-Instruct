@@ -253,7 +253,8 @@ class DataTrainingArguments:
         default=False,
         metadata={"help": "tk_instruct will train a model combining all valid instruction encodings. This will overwrite the other settings about instruction encoding."} 
     )
-    
+
+
     def __post_init__(self):
         pass
 
@@ -280,6 +281,11 @@ class NITrainingArguments(Seq2SeqTrainingArguments):
         default=False,
         metadata={"help": "If specifid, the model will do more evaluation at the beginning of training."}
     )
+    actor_zero_stage: Optional[int] = field(
+        default=0,
+        metadata={"help": "tk_instruct will train a model combining all valid instruction encodings. This will overwrite the other settings about instruction encoding."}
+    )
+
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -379,11 +385,14 @@ def main():
     model = ActorCritic(model_args=model_args, config=config, peft_config=peft_config)
     model.actor.resize_token_embeddings(len(tokenizer))
     model.critic.resize_token_embeddings(len(tokenizer))
-    model.sft.resize_token_embeddings(len(tokenizer))
+    model.actor_ema.resize_token_embeddings(len(tokenizer))
+    model.ref_model.resize_token_embeddings(len(tokenizer))
+    model.reward_model.resize_token_embeddings(len(tokenizer))
+    model.PAD_ID = tokenizer.pad_token_id
 
     model.critic.print_trainable_parameters()
     model.actor.print_trainable_parameters()
-    model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-rl-ppo-ptx-sft-fulog/checkpoint-34-4/pytorch_model.bin",map_location='cpu'))
+    # model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-rl-ppo-ptx-sft-fulog/checkpoint-34-4/pytorch_model.bin",map_location='cpu'))
 
     #  0  -> 39 -> 79
     # double  39 -> 42 ->  43.0379
@@ -395,9 +404,11 @@ def main():
     # base 42.0831
 
     # beta005 18epoch  43.31
-    # model.sft.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch8_instruction_gneration/pytorch_model.bin",map_location='cpu'))
-    # model.actor.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch8_instruction_gneration/pytorch_model.bin",map_location='cpu'))
-    # model.critic.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-adapt-lora-experiment-epoch8/pytorch_model.bin",map_location='cpu'))
+    model.ref_model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch8_instruction_gneration/pytorch_model.bin",map_location='cpu'))
+    model.actor.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch8_instruction_gneration/pytorch_model.bin",map_location='cpu'))
+    model.actor_ema.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-epoch8_instruction_gneration/pytorch_model.bin",map_location='cpu'))
+    model.reward_model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-adapt-lora-experiment-epoch8/pytorch_model.bin",map_location='cpu'))
+    model.critic.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-adapt-lora-experiment-epoch8/pytorch_model.bin",map_location='cpu'))
 
     if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
         if isinstance(tokenizer, MBartTokenizer):

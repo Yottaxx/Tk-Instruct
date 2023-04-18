@@ -275,23 +275,15 @@ class DataCollatorForRLExNI:
 
     def __call__(self, batch, return_tensors=None):
 
-        # "instances",  # text instances
-        # "instructions",  # text instructions
-        # "items",  # text instances + instructions
-        # "labels",  # text result
-        # "reward",  # tensor outputs of critic
-        # "logits",  # tensor outputs of actor
-        #
         instances =  [batch[i]["instance"][0] for i in range(len(batch))]
         items =  [batch[i]["item"][0] for i in range(len(batch))]
-        # instructions =  [batch[i]["instruction"][0] for i in range(len(batch))]
         instructions =  torch.LongTensor([batch[i]["instruction"] for i in range(len(batch))]).squeeze(dim=1)
-
-        # labels =  [batch[i]["labels"][0] for i in range(len(batch))]
         labels =  torch.LongTensor([batch[i]["labels"] for i in range(len(batch))])
 
         reward =  torch.Tensor([batch[i]["reward"] for i in range(len(batch))])
         logits =  torch.Tensor([batch[i]["logits"] for i in range(len(batch))])
+        value = torch.Tensor([batch[i]["value"] for i in range(len(batch))])
+        ref_logits = torch.Tensor([batch[i]["ref_logits"] for i in range(len(batch))])
         logits_mask =  torch.Tensor([batch[i]["logits_mask"] for i in range(len(batch))])
 
         model_inputs = self.tokenizer(
@@ -313,30 +305,6 @@ class DataCollatorForRLExNI:
         model_inputs["instructed_input_ids"] = instructed_input["input_ids"]
         model_inputs["instructed_attention_mask"] = instructed_input["attention_mask"]
 
-        # with self.tokenizer.as_target_tokenizer():
-        #     labels = self.tokenizer(
-        #         labels,
-        #         max_length=self.max_target_length,
-        #         padding="max_length",
-        #         return_tensors=self.return_tensors,
-        #         pad_to_multiple_of=self.pad_to_multiple_of
-        #     )
-        #     label_mask = labels["attention_mask"].bool()
-        #     model_inputs["labels"] = labels["input_ids"].masked_fill(~label_mask, self.label_pad_token_id)
-            
-        # model_inputs["labels"] = labels
-
-        # with self.tokenizer.as_target_tokenizer():
-        #     instruction_labels = self.tokenizer(
-        #         instructions,
-        #         max_length=self.max_target_length,
-        #         padding="max_length",
-        #         return_tensors=self.return_tensors,
-        #         pad_to_multiple_of=self.pad_to_multiple_of
-        #     )
-        #     label_mask = instruction_labels["attention_mask"].bool()
-        #     model_inputs["instruction_labels"] = instruction_labels["input_ids"].masked_fill(~label_mask, self.label_pad_token_id)
-        
         model_inputs["instruction_labels"] = instructions
         model_inputs["labels"] = labels
 
@@ -348,8 +316,10 @@ class DataCollatorForRLExNI:
             model_inputs["decoder_input_ids"] = decoder_input_ids
             model_inputs["instruction_decoder_input_ids"] = instruction_decoder_input_ids
 
-        model_inputs["old_actions_log_probs"] = logits
-        model_inputs["old_rewards"] =  reward
-        model_inputs["old_actions_log_probs_mask"] =  logits_mask
 
+        model_inputs["old_actions_log_probs"] = logits
+        model_inputs["old_ref_log_probs"] = ref_logits
+        model_inputs["old_rewards"] =  reward
+        model_inputs["old_values"] =  value
+        model_inputs["old_actions_log_probs_mask"] =  logits_mask
         return model_inputs

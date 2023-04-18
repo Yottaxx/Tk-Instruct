@@ -11,12 +11,16 @@ from transformers.trainer_callback import TrainerCallback
 from collections import deque, namedtuple
 from datasets import Dataset
 import jsonlines
+import deepspeed
+from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+
 skip_first_batches = None
 if is_accelerate_available():
     from accelerate import __version__ as accelerate_version
 
     if version.parse(accelerate_version) >= version.parse("0.16"):
         from accelerate import skip_first_batches
+
 
 class DenserEvalCallback(TrainerCallback):
 
@@ -35,8 +39,6 @@ class DenserEvalCallback(TrainerCallback):
         return control
 
 
-
-
 # class ExperienceDataset(Dataset):
 #     """Dataset to train the actor-critic models"""
 
@@ -47,7 +49,7 @@ class DenserEvalCallback(TrainerCallback):
 #         super().__init__()
 #         self.data = list(memories)
 #         self.len = len(self.data)
-        
+
 #     def __len__(
 #             self,
 #     ) -> int:
@@ -89,8 +91,9 @@ class NIRLTrainer(Seq2SeqTrainer):
                          compute_metrics, callbacks, optimizers, preprocess_logits_for_metrics)
         self.ex_train_dataset = ex_train_dataset
         self.ex_data_collator = ex_data_collator
-        self.current_episode = 0 
+        self.current_episode = 0
         self.ppo_beam = args.ppo_beam
+
     # rewrite the evaluation loop, with customized call to compute_metrics
     def _get_ex_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
         if self.ex_train_dataset is None or not has_length(self.ex_train_dataset):
@@ -123,7 +126,7 @@ class NIRLTrainer(Seq2SeqTrainer):
             model_input_name = self.tokenizer.model_input_names[0] if self.tokenizer is not None else None
             if self.args.world_size <= 1:
                 return LengthGroupedSampler(
-                    self.args.train_batch_size * self.args.gradient_accumulation_steps ,
+                    self.args.train_batch_size * self.args.gradient_accumulation_steps,
                     dataset=self.ex_train_dataset,
                     lengths=lengths,
                     model_input_name=model_input_name,
@@ -213,7 +216,6 @@ class NIRLTrainer(Seq2SeqTrainer):
             worker_init_fn=seed_worker,
         )
 
-
     def _get_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
         if self.train_dataset is None or not has_length(self.train_dataset):
             return None
@@ -245,7 +247,7 @@ class NIRLTrainer(Seq2SeqTrainer):
             model_input_name = self.tokenizer.model_input_names[0] if self.tokenizer is not None else None
             if self.args.world_size <= 1:
                 return LengthGroupedSampler(
-                    self.args.train_batch_size * self.args.gradient_accumulation_steps * 4 ,
+                    self.args.train_batch_size * self.args.gradient_accumulation_steps * 4,
                     dataset=self.train_dataset,
                     lengths=lengths,
                     model_input_name=model_input_name,
@@ -266,8 +268,8 @@ class NIRLTrainer(Seq2SeqTrainer):
             if self.args.world_size <= 1:
                 return RandomSampler(self.train_dataset, generator=generator)
             elif (
-                self.args.parallel_mode in [ParallelMode.TPU, ParallelMode.SAGEMAKER_MODEL_PARALLEL]
-                and not self.args.dataloader_drop_last
+                    self.args.parallel_mode in [ParallelMode.TPU, ParallelMode.SAGEMAKER_MODEL_PARALLEL]
+                    and not self.args.dataloader_drop_last
             ):
                 # Use a loop for TPUs when drop_last is False to have all batches have the same size.
                 return DistributedSamplerWithLoop(
@@ -316,7 +318,7 @@ class NIRLTrainer(Seq2SeqTrainer):
 
             return DataLoader(
                 train_dataset,
-                batch_size=self.args.per_device_train_batch_size * 4 ,
+                batch_size=self.args.per_device_train_batch_size * 4,
                 collate_fn=data_collator,
                 num_workers=self.args.dataloader_num_workers,
                 pin_memory=self.args.dataloader_pin_memory,
@@ -334,7 +336,6 @@ class NIRLTrainer(Seq2SeqTrainer):
             pin_memory=self.args.dataloader_pin_memory,
             worker_init_fn=seed_worker,
         )
-
 
     def _inner_training_loop(
             self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
@@ -373,7 +374,8 @@ class NIRLTrainer(Seq2SeqTrainer):
             logger.info(f"  Num Episode = {i}")
             logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
 
-            generated_data = self.ppo_generate_data(model, train_dataloader,i)
+            generated_data = self.ppo_generate_data(model, train_dataloader, i)
+
             # generated_data = [x._asdict() for x in list(generated_data)]
 
             def dataset_translator():
@@ -381,10 +383,11 @@ class NIRLTrainer(Seq2SeqTrainer):
                     yield generated_data[i]
 
             self.ex_train_dataset = Dataset.from_generator(dataset_translator)
-            output= self._inner_mini_training_loop(batch_size, args, resume_from_checkpoint, trial, ignore_keys_for_eval)
-            self.current_episode += 1 
+            output = self._inner_mini_training_loop(batch_size, args, resume_from_checkpoint, trial,
+                                                    ignore_keys_for_eval)
+            self.current_episode += 1
         return output
-    
+
     # def _inner_mini_training_loop(
     #         self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
     # ):
@@ -1118,7 +1121,7 @@ class NIRLTrainer(Seq2SeqTrainer):
                     self.state.epoch = epoch + (step + 1) / steps_in_epoch
                     self.control = self.callback_handler.on_step_end(args, self.state, self.control)
 
-                    self._maybe_log_save_evaluate(tr_loss, mlm_loss, bce_loss,bce_acc, model, trial, epoch,
+                    self._maybe_log_save_evaluate(tr_loss, mlm_loss, bce_loss, bce_acc, model, trial, epoch,
                                                   ignore_keys_for_eval)
                 else:
                     self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
@@ -1134,7 +1137,8 @@ class NIRLTrainer(Seq2SeqTrainer):
                 self.control.should_training_stop = True
 
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
-            self._maybe_log_save_evaluate(tr_loss, mlm_loss, bce_loss,bce_acc, model, trial, epoch, ignore_keys_for_eval)
+            self._maybe_log_save_evaluate(tr_loss, mlm_loss, bce_loss, bce_acc, model, trial, epoch,
+                                          ignore_keys_for_eval)
 
             if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
                 if is_torch_tpu_available():
@@ -1181,7 +1185,6 @@ class NIRLTrainer(Seq2SeqTrainer):
         metrics["kl_loss"] = train_bce_loss
         metrics["critic_loss"] = train_bce_acc
 
-
         self.is_in_train = False
 
         self._memory_tracker.stop_and_update_metrics(metrics)
@@ -1191,6 +1194,29 @@ class NIRLTrainer(Seq2SeqTrainer):
         self.control = self.callback_handler.on_train_end(args, self.state, self.control)
 
         return TrainOutput(self.state.global_step, train_loss, metrics)
+
+    def _z3_params_to_fetch(self,param_list):
+        return [
+            p for p in param_list
+            if hasattr(p, 'ds_id') and p.ds_status == ZeroParamStatus.NOT_AVAILABLE
+        ]
+
+    def moving_average(self,model, model_ema, beta=0.992, device=None, zero_stage=0):
+        zero_stage_3 = (zero_stage == 3)
+        with torch.no_grad():
+            for param, param_ema in zip(model.parameters(),
+                                        model_ema.parameters()):
+                # TODO: use prefiltering for efficiency
+                params_to_fetch = self._z3_params_to_fetch([param, param_ema
+                                                       ]) if zero_stage_3 else []
+                should_gather_param = len(params_to_fetch) > 0
+                with deepspeed.zero.GatheredParameters(
+                        params_to_fetch, enabled=should_gather_param):
+                    data = param.data
+                    if device is not None:
+                        data = data.to(device)
+                    param_ema.data.copy_(torch.lerp(data, param_ema.data, beta))
+
 
     def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
         """
@@ -1210,7 +1236,7 @@ class NIRLTrainer(Seq2SeqTrainer):
         Return:
             `torch.Tensor`: The tensor with training loss on this batch.
         """
-        model.train()
+        model.train_state()
         inputs = self._prepare_inputs(inputs)
 
         if is_sagemaker_mp_enabled():
@@ -1245,6 +1271,11 @@ class NIRLTrainer(Seq2SeqTrainer):
         else:
             loss.backward()
 
+        self.moving_average(model.actor,
+                       model.actor_ema,
+                       zero_stage=self.args.actor_zero_stage)
+
+
         if self.model.training:
             return loss.detach(), mlm_loss.detach(), bce_loss.detach(), bce_acc.detach()
         else:
@@ -1272,10 +1303,10 @@ class NIRLTrainer(Seq2SeqTrainer):
             # We don't use .loss here since the model may return tuples instead of ModelOutput.
             loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
         if self.model.training:
-            return (loss, outputs) if return_outputs else loss, outputs['policy_loss'], outputs['kl_loss'], outputs['critic_loss']
+            return (loss, outputs) if return_outputs else loss, outputs['policy_loss'], outputs['kl_loss'], outputs[
+                'critic_loss']
         else:
             return (loss, outputs) if return_outputs else loss
-
 
     def _maybe_log_save_evaluate(self, tr_loss, mlm_loss, bce_loss, bce_acc, model, trial, epoch, ignore_keys_for_eval):
         if self.control.should_log:
@@ -1297,10 +1328,11 @@ class NIRLTrainer(Seq2SeqTrainer):
             bce_acc -= bce_acc
 
             logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
-            logs["policy_loss"] = round(mlm_loss_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
+            logs["policy_loss"] = round(mlm_loss_loss_scalar / (self.state.global_step - self._globalstep_last_logged),
+                                        4)
             logs["kl_loss"] = round(bce_loss_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
-            logs["critic_loss"] = round(bce_acc_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
-
+            logs["critic_loss"] = round(bce_acc_loss_scalar / (self.state.global_step - self._globalstep_last_logged),
+                                        4)
 
             logs["learning_rate"] = self._get_learning_rate()
 
@@ -1329,7 +1361,7 @@ class NIRLTrainer(Seq2SeqTrainer):
         # assert unwrap_model(model) is self.model, "internal model should be a reference to self.model"
 
         # Save model checkpoint
-        checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}-{int(self.current_episode/20)}"
+        checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}-{int(self.current_episode / 20)}"
 
         if self.hp_search_backend is None and trial is None:
             self.store_flos()
@@ -1386,9 +1418,9 @@ class NIRLTrainer(Seq2SeqTrainer):
 
             operator = np.greater if self.args.greater_is_better else np.less
             if (
-                self.state.best_metric is None
-                or self.state.best_model_checkpoint is None
-                or operator(metric_value, self.state.best_metric)
+                    self.state.best_metric is None
+                    or self.state.best_model_checkpoint is None
+                    or operator(metric_value, self.state.best_metric)
             ):
                 self.state.best_metric = metric_value
                 self.state.best_model_checkpoint = output_dir
@@ -1429,135 +1461,93 @@ class NIRLTrainer(Seq2SeqTrainer):
         if self.args.should_save:
             self._rotate_checkpoints(use_mtime=True, output_dir=run_dir)
 
-
     @torch.no_grad()
-    def ppo_generate_data(self, model, epoch_iterator,episode):
+    def ppo_generate_data(self, model, epoch_iterator, episode):
         memories = []
         # memories = deque([])
-        model.eval()
+        model.eval_state()
 
-        with jsonlines.open( os.path.join(self.args.output_dir, f"replacedInstruction{self.args.local_rank}.json"),"a") as writer:
-            countReplaceInstruction = 0
-            writer.write({"begin":f"-------------------epoch {episode}-------------------"})
+        with jsonlines.open(os.path.join(self.args.output_dir, f"replacedInstruction{self.args.local_rank}.json"),
+                            "a") as writer:
+            writer.write({"begin": f"-------------------epoch {episode}-------------------"})
             for step, inputs in tqdm(enumerate(epoch_iterator)):
-
-            # inputs["max_length"] = model.config.max_length
-
-            # TODO Temperature  inputs["temperature"] =self.args.temperature
-            #
 
                 inputs = self._prepare_inputs(inputs)
 
-                generated_instructions, generated_rewards_last_instructions = model.generate_ppo(**inputs)
+                generated_instructions = model.generate_ppo(**inputs)
 
                 instructions = self.tokenizer.batch_decode(generated_instructions, skip_special_tokens=True)
                 instances = self.tokenizer.batch_decode(inputs["woinstruction_input_ids"], skip_special_tokens=True)
 
-                ### before_logits
-                generated_last_logits = model.get_actor_logits(input_ids=inputs["input_ids"],
-                                                            attention_mask=inputs["attention_mask"],
-                                                            labels=inputs["instruction_labels"],
-                                                            )
-
-                ### new logits
-
-                generated_instruction_labels = self.tokenizer(instructions, padding="max_length", return_tensors="pt",truncation=True,
-                                                            max_length=self.model.logits_shape)
-                # print(instructions)
-                # print(generated_instruction_labels["input_ids"].shape)
+                generated_instruction_labels = self.tokenizer(instructions, padding="max_length", return_tensors="pt",
+                                                              truncation=True,
+                                                              max_length=self.model.logits_shape)
                 label_mask = generated_instruction_labels["attention_mask"].bool()
+
                 generated_instruction_labels = generated_instruction_labels["input_ids"].masked_fill(~label_mask, -100)
                 generated_instruction_labels = self._prepare_inputs(generated_instruction_labels)
-                generated_new_logits = model.get_actor_logits(input_ids=inputs["input_ids"].unsqueeze(dim=1).repeat_interleave(self.ppo_beam,dim=1).view(-1,inputs["input_ids"].shape[-1]),
-                                                            attention_mask=inputs["attention_mask"].unsqueeze(dim=1).repeat_interleave(self.ppo_beam,dim=1).view(-1,inputs["attention_mask"].shape[-1]),
-                                                            labels=generated_instruction_labels,
-                                                            )
-                # TODO Last time mask
 
-
+                logprobs = model.get_actor_log_prob(input_ids=inputs["input_ids"],
+                                                                attention_mask=inputs["attention_mask"],
+                                                                labels=generated_instruction_labels,
+                                                                )
+                ref_logprobs = model.get_ref_log_prob(input_ids=inputs["input_ids"],
+                                                                attention_mask=inputs["attention_mask"],
+                                                                labels=generated_instruction_labels,)
                 ## new instruction rewards
-                generated_items = [instructions[i] +"\n\n"+ instances[int(i/self.ppo_beam)] for i in range(len(instructions))]
+                generated_items = [instructions[i] + "\n\n" + instances[int(i / self.ppo_beam)] for i in
+                                   range(len(instructions))]
 
-                generated_inputs = self.tokenizer(generated_items,padding=True ,truncation=True, return_tensors="pt",max_length=self.data_collator.max_source_length)
-                generated_inputs["labels"] = inputs["labels"].unsqueeze(dim=1).repeat_interleave(self.ppo_beam,dim=1).view(-1,inputs["labels"].shape[-1])
+                generated_inputs = self.tokenizer(generated_items, padding=True, truncation=True, return_tensors="pt",
+                                                  max_length=self.data_collator.max_source_length)
+                generated_inputs["labels"] = inputs["labels"]
                 generated_inputs = self._prepare_inputs(generated_inputs)
-                generated_rewards_newest_instructions = model.get_rewards(**generated_inputs)
 
-                max_rewards_newest_indices = generated_rewards_newest_instructions.view(-1,self.ppo_beam).max(dim=-1)[1]
+                rewards = model.get_reward(**generated_inputs)['chosen_end_scores'].detach(
+                )
+                generated_inputs["return_value_only"] = True
 
-                for i in range(len(generated_rewards_last_instructions)):
+                values = model.get_critic(**generated_inputs)['chosen_end_scores'].detach(
+                )[:, :-1]
 
-                    item = inputs["instructed_input_ids"][i]
+                for i in range(inputs["input_ids"].shape[0]):
+
                     instance = inputs["input_ids"][i]
-                    instruction = inputs["instruction_labels"][i]
-                    reward = generated_rewards_last_instructions.unsqueeze(dim=-1)[i]
-                    logit = generated_last_logits[i]
-                    mask = (inputs["instruction_labels"][i]!=-100)
-
                     # set True for optimize instruction generation
-                    if True :
-                    # if generated_rewards_newest_instructions[i].item() > generated_rewards_last_instructions[i].item() and generated_rewards_newest_instructions[i].item()>0.1:
-                        newest_index = self.ppo_beam * i + max_rewards_newest_indices[i]
-                        item = generated_inputs["input_ids"][newest_index]
-                        instruction = generated_instruction_labels[newest_index]
-                        reward = generated_rewards_newest_instructions.unsqueeze(dim=-1)[newest_index]
-                        logit = generated_new_logits[newest_index]
-                        mask = (generated_instruction_labels[newest_index]!=-100)
-                        
-                        writer.write(
-                            {"Original":self.tokenizer.decode(inputs["instruction_labels"][i].masked_fill(inputs["instruction_labels"][i]==-100, self.tokenizer.pad_token_id),skip_special_tokens=True),
-                            "OriginalScore":generated_rewards_last_instructions[i].tolist(),
-                            "Generated":instructions[newest_index],
-                            "GeneratedScore":generated_rewards_newest_instructions[newest_index].tolist()
-                            }
-                        )
+                    item = generated_inputs["input_ids"][i]
+                    instruction = generated_instruction_labels[i]
+                    reward = rewards[i]
+                    value = values[i]
+                    logit = logprobs[i]
+                    ref_logit = ref_logprobs[i]
+                    mask = (generated_instruction_labels[i] != -100)
 
-                    # memories["instance"].append(instance.detach().cpu().tolist())
-                    # memories["instruction"].append(instruction.detach().cpu().tolist())
-                    # memories["item"].append(item.detach().cpu().tolist())
-                    # memories["labels"].append(inputs["labels"][i].detach().cpu().tolist())
-                    # memories["reward"].append(reward.detach().cpu().tolist())
-                    # memories["logits"].append(logit.detach().cpu().tolist())
-                    # memories["logits_mask"].append(mask.detach().cpu().tolist())
+                    writer.write(
+                        {"Original": self.tokenizer.decode(
+                            inputs["instruction_labels"][i].masked_fill(inputs["instruction_labels"][i] == -100,
+                                                                        self.tokenizer.pad_token_id),
+                            skip_special_tokens=True),
+                         "Generated": instructions[i],
+                         }
+                    )
 
-                    # memories.append(
-                    #     Memory(
-                    #         *map(
-                    #             lambda x: x.detach().cpu(),
-                    #             (
-                    #                 instance,
-                    #                 instruction,
-                    #                 item,
-                    #                 inputs["labels"][i],  # diversity
-                    #                 reward,
-                    #                 logit,
-                    #                 mask,
-                    #             ),
-                    #         )
-                    #     )
-                    # )
-                    # "labels":self.tokenizer.batch_decode(inputs["labels"][i].masked_fill(inputs["labels"]==-100, self.tokenizer.pad_token_id).detach().cpu(),skip_special_tokens=True),
-                    assert len(inputs["labels"][i].shape)==1,f"labels assert {inputs['labels'][i].shape}"
-                    assert len(reward.shape)==2,f"reward assert{reward.shape}{generated_rewards_last_instructions}"
-                    assert len(logit.shape)==1,f"logit assert{logit.shape}"
-                    assert len(mask.shape)==1,f"logits_mask assert{mask.shape}"
-                    assert len(instruction.shape)==1,f"instruction assert{instruction.shape}"
-                    
                     memory = {
-                        "instance":[self.tokenizer.decode(instance.detach().cpu(),skip_special_tokens=True)],
-                        "instruction":instruction.squeeze(dim=0).detach().cpu(),
-                        "item":[self.tokenizer.decode(item.detach().cpu(),skip_special_tokens=True)],
+                        "instance": [self.tokenizer.decode(instance.detach().cpu(), skip_special_tokens=True)],
+                        "instruction": instruction.squeeze(dim=0).detach().cpu(),
+                        "item": [self.tokenizer.decode(item.detach().cpu(), skip_special_tokens=True)],
                         "labels": inputs["labels"][i].detach().cpu(),
-                        "reward":reward.detach().cpu().float(),
-                        "logits":logit.detach().cpu().float(),
-                        "logits_mask":mask.detach().cpu(),
+                        "reward": reward.detach().cpu().float(),
+                        "value":value.detach().cpu().float(),
+                        "logits": logit.detach().cpu().float(),
+                        "ref_logits": ref_logit.detach().cpu().float(),
+                        "logits_mask": mask.detach().cpu(),
                     }
 
-                    if torch.distributed.is_available() and torch.distributed.is_initialized(): 
+                    if torch.distributed.is_available() and torch.distributed.is_initialized():
                         memory_list = [None for i in range(torch.distributed.get_world_size())]
                         torch.distributed.all_gather_object(memory_list, memory)
                         memories.extend(
-                            memory_list 
+                            memory_list
                         )
                     else:
                         memories.append(memory)
@@ -1808,14 +1798,17 @@ class NIRLTrainer(Seq2SeqTrainer):
         else:
             instruction_gen_kwargs = self._gen_kwargs.copy()
 
-            if instruction_gen_kwargs.get("max_length") is None and instruction_gen_kwargs.get("max_new_tokens") is None:
+            if instruction_gen_kwargs.get("max_length") is None and instruction_gen_kwargs.get(
+                    "max_new_tokens") is None:
                 instruction_gen_kwargs["max_length"] = self.model.config.max_length
             instruction_gen_kwargs["num_beams"] = (
-                instruction_gen_kwargs["num_beams"] if instruction_gen_kwargs.get("num_beams") is not None else self.model.config.num_beams
+                instruction_gen_kwargs["num_beams"] if instruction_gen_kwargs.get(
+                    "num_beams") is not None else self.model.config.num_beams
             )
             default_synced_gpus = True if is_deepspeed_zero3_enabled() else False
             instruction_gen_kwargs["synced_gpus"] = (
-                instruction_gen_kwargs["synced_gpus"] if instruction_gen_kwargs.get("synced_gpus") is not None else default_synced_gpus
+                instruction_gen_kwargs["synced_gpus"] if instruction_gen_kwargs.get(
+                    "synced_gpus") is not None else default_synced_gpus
             )
 
             if "input_ids" in inputs:
@@ -1833,8 +1826,8 @@ class NIRLTrainer(Seq2SeqTrainer):
             #     generation_inputs = inputs[self.model.main_input_name]
             #     gen_kwargs[self.model.main_input_name] = inputs[self.model.encoder.main_input_name]
             generated_instructions = self.model.generate_instruction(
-                    **instruction_gen_kwargs
-                 )
+                **instruction_gen_kwargs
+            )
 
             instructions = self.tokenizer.batch_decode(generated_instructions, skip_special_tokens=True)
             instances = self.tokenizer.batch_decode(inputs["woinstruction_input_ids"], skip_special_tokens=True)

@@ -44,3 +44,4 @@ deepspeed --master_port $port --include localhost:1,4 src/run_s2s.py \
     --bf16 \
     --run_name t5-large-lm-adapt-lora-experiment \
     --max_eval_samples 1000 \
+    --actor_zero_stage 2
