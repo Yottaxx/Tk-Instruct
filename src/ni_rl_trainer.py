@@ -1506,9 +1506,9 @@ class NIRLTrainer(Seq2SeqTrainer):
                         
                         writer.write(
                             {"Original":self.tokenizer.decode(inputs["instruction_labels"][i].masked_fill(inputs["instruction_labels"][i]==-100, self.tokenizer.pad_token_id),skip_special_tokens=True),
-                            "OriginalScore":generated_rewards_last_instructions[i].item(),
+                            "OriginalScore":generated_rewards_last_instructions[i].tolist(),
                             "Generated":instructions[newest_index],
-                            "GeneratedScore":generated_rewards_newest_instructions[newest_index].item()
+                            "GeneratedScore":generated_rewards_newest_instructions[newest_index].tolist()
                             }
                         )
 
@@ -1538,7 +1538,7 @@ class NIRLTrainer(Seq2SeqTrainer):
                     # )
                     # "labels":self.tokenizer.batch_decode(inputs["labels"][i].masked_fill(inputs["labels"]==-100, self.tokenizer.pad_token_id).detach().cpu(),skip_special_tokens=True),
                     assert len(inputs["labels"][i].shape)==1,f"labels assert {inputs['labels'][i].shape}"
-                    assert len(reward.shape)==1,f"reward assert{reward.shape}{generated_rewards_last_instructions}"
+                    assert len(reward.shape)==2,f"reward assert{reward.shape}{generated_rewards_last_instructions}"
                     assert len(logit.shape)==1,f"logit assert{logit.shape}"
                     assert len(mask.shape)==1,f"logits_mask assert{mask.shape}"
                     assert len(instruction.shape)==1,f"instruction assert{instruction.shape}"

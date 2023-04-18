@@ -96,7 +96,7 @@ class ModelArguments:
         default=0.2, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
     )
     beta_s: Optional[float] = field(
-        default=0.005, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+        default=0.001, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
     )
     pretrain_s: Optional[float] = field(
         default=5.8, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
@@ -383,7 +383,7 @@ def main():
 
     model.critic.print_trainable_parameters()
     model.actor.print_trainable_parameters()
-    model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-rl-ppo-ptx-sft/checkpoint-34-15/pytorch_model.bin",map_location='cpu'))
+    model.load_state_dict(torch.load("/home/zx/experiments/selfInstruct/t5-large-lm-adapt-lora-experiment-rl-ppo-ptx-sft-fulog/checkpoint-34-4/pytorch_model.bin",map_location='cpu'))
 
     #  0  -> 39 -> 79
     # double  39 -> 42 ->  43.0379

@@ -131,6 +131,8 @@ class ActorCritic(torch.nn.Module):
         for param in self.sft.parameters():
             param.requires_grad = False
 
+
+
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
         return self.critic._shift_right(labels)
 
@@ -246,8 +248,11 @@ class ActorCritic(torch.nn.Module):
             # values = torch.exp(-loss_lm.clone())
             # Is there need detach()?
 
-            rewards = (loss_lm.view(output_critic.logits.shape[0], -1).sum(dim=-1) * (
-                    (labels != -100).sum(dim=-1))).detach()
+            # rewards = (loss_lm.view(output_critic.logits.shape[0], -1).sum(dim=-1) * (
+            #         (labels != -100).sum(dim=-1))).detach()
+
+            rewards = loss_lm.view(output_critic.logits.shape[0], -1).cumsum(dim=-1) / (labels != -100).cumsum(dim=-1)
+
 
             if not self.training:
                 return RLSeq2SeqLMOutput(
@@ -309,9 +314,9 @@ class ActorCritic(torch.nn.Module):
             #  multiplied directly with the reward)
 
             ## fix rations mask
-            ratios = (actions_log_prob - old_actions_log_probs).exp() * action_mask.float()
+            ratios = (actions_log_prob - old_actions_log_probs).exp()
             
-            advantages = (torch.log(old_rewards) - torch.log(rewards.unsqueeze(dim=-1)))
+            advantages = (old_rewards - rewards)
             surr1 = advantages * ratios
 
             # advantages = rewards.unsqueeze(dim=-1) - old_rewards
@@ -384,10 +389,10 @@ class ActorCritic(torch.nn.Module):
 
         loss_fct = CrossEntropyLoss(ignore_index=-100, reduction="none")
         loss_lm = loss_fct(output_critic.logits.view(-1, output_critic.logits.size(-1)), labels.view(-1))
-        rewards = (loss_lm.clone().detach().view(output_critic.logits.shape[0], -1).sum(dim=-1) * (
-                (labels != -100).sum(dim=-1)))
+        # rewards = (loss_lm.clone().detach().view(output_critic.logits.shape[0], -1).sum(dim=-1) * (
+        #         (labels != -100).sum(dim=-1)))
 
-        # rewards = loss_lm.cumsum(dim=-1) / (labels != -100).cumsum(dim=-1)
+        rewards = loss_lm.view(output_critic.logits.shape[0], -1).cumsum(dim=-1) / (labels != -100).cumsum(dim=-1)
 
         return rewards
 
